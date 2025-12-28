@@ -8,6 +8,7 @@ import numpy as np
 from collections import deque, defaultdict
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+import argparse
 
 # 初始化 Pygame
 pygame.init()
@@ -680,33 +681,41 @@ def manual_mode():
 
 
 def main():
-    """主函数，提供模式选择"""
+    """主函数，解析命令行参数并启动相应模式"""
+    parser = argparse.ArgumentParser(description='Snake Game DQN AI')
+    
+    # 模式选择参数
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--train', action='store_true', help='训练模式')
+    group.add_argument('--play', action='store_true', help='自动玩模式')
+    group.add_argument('--manual', action='store_true', help='手动玩模式')
+    
+    # 模型文件参数（仅在play模式下使用）
+    parser.add_argument('--model', type=str, default='snake_dqn_model_final.pth', help='训练好的模型文件路径')
+    
+    args = parser.parse_args()
+    
     print("=== Snake Game DQN AI ===")
-    print("请选择模式：")
-    print("1. 训练模式 (Training Mode)")
-    print("2. 加载模型自动玩 (Play with Trained Model)")
-    print("3. 手动玩游戏 (Manual Mode)")
     
-    choice = input("请输入选择 (1/2/3): ").strip()
-    
-    if choice == "1":
-        print("启动训练模式...")
-        train_mode()
-    elif choice == "2":
-        model_file = input("请输入模型文件路径: ").strip()
-        print(f"启动自动玩模式，使用模型: {model_file}...")
-        play_mode(model_file)
-    elif choice == "3":
+    if args.play:
+        # 自动玩模式
+        print(f"启动自动玩模式，使用模型: {args.model}...")
+        play_mode(args.model)
+    elif args.manual:
+        # 手动玩模式
         print("启动手动玩游戏模式...")
         manual_mode()
     else:
-        print("无效的选择，请输入 1, 2 或 3")
+        # 默认模式：训练模式
+        print("启动训练模式...")
+        train_mode()
 
 
 # 直接运行训练模式进行测试
 if __name__ == "__main__":
+    main()
     # 为了测试，直接运行训练模式
-    print("=== Snake Game DQN AI ===")
-    print("直接启动训练模式进行测试...")
-    train_mode(show_visualization=True)
+    # print("=== Snake Game DQN AI ===")
+    # print("直接启动训练模式进行测试...")
+    # train_mode(show_visualization=True)
     
