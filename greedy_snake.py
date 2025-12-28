@@ -128,7 +128,7 @@ class GameCore:
                 if distance_to_food < self.distance_old:
                     reward = 1  # 向食物移动给予小奖励
                 else:
-                    reward = -0.5  # 远离食物给予小惩罚
+                    reward = -1  # 远离食物给予小惩罚
         
         # 记录当前距离用于下一次比较
         self.distance_old = np.sqrt((self.x1 - self.foodx)**2 + (self.y1 - self.foody)**2)
@@ -246,12 +246,28 @@ class GameCore:
 class DQN(nn.Module):
     def __init__(self, input_size, hidden_size, output_size):
         super(DQN, self).__init__()
-        # 增加隐藏层节点数和深度
-        self.fc1 = nn.Linear(input_size, 128)
-        self.fc2 = nn.Linear(128, 256)
-        self.fc3 = nn.Linear(256, 256)
-        self.fc4 = nn.Linear(256, 128)
-        self.fc5 = nn.Linear(128, output_size)
+        # 使用传入的hidden_size参数构建网络
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, hidden_size)
+        self.fc4 = nn.Linear(hidden_size, hidden_size)
+        self.fc5 = nn.Linear(hidden_size, output_size)
+        
+        # 自定义参数初始化
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        """使用更适合DQN的权重初始化方法"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # 对于隐藏层使用Kaiming初始化
+                if m.out_features != 4:  # 不是输出层
+                    nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
+                else:  # 输出层使用较小的初始化值
+                    nn.init.uniform_(m.weight, -0.1, 0.1)
+                
+                # 偏置初始化为0
+                nn.init.zeros_(m.bias)
 
     def forward(self, x):
         l1 = torch.relu(self.fc1(x))
@@ -266,15 +282,15 @@ class DQNAgent:
     def __init__(self, state_size, action_size):
         self.state_size = state_size
         self.action_size = action_size
-        self.memory = deque(maxlen=5000)  # 增大经验回放缓冲区
-        self.gamma = 0.95  # 提高折扣因子，更重视长期奖励
+        self.memory = deque(maxlen=10000)  # 增大经验回放缓冲区
+        self.gamma = 0.99  # 提高折扣因子，更重视长期奖励
         self.epsilon = 1.0  # 探索率
         self.epsilon_min = 0.001  # 降低最小探索率
         self.epsilon_decay = 0.995  # 加快探索率衰减
-        self.learning_rate = 0.0005  # 提高学习率
-        self.model = DQN(state_size, 64, action_size)  # 隐藏层大小不再使用，保持参数兼容
+        self.learning_rate = 0.0001  # 提高学习率
+        self.model = DQN(state_size, 256, action_size)  # 隐藏层大小不再使用，保持参数兼容
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
-        self.criterion = nn.MSELoss()  # 可以考虑使用HuberLoss更稳健
+        self.criterion = nn.SmoothL1Loss()  # 使用Huber损失(SmoothL1Loss)，提高对异常值的鲁棒性
 
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
@@ -327,7 +343,7 @@ class DQNAgent:
         action = np.argmax(act_values.detach().numpy())
         return action
 
-    def replay(self, batch_size):
+    def train(self, batch_size):
         '''
         从经验回放缓冲区中随机采样一个批次的经验，用于训练模型。
         '''
@@ -335,22 +351,32 @@ class DQNAgent:
             return
             
         minibatch = random.sample(self.memory, batch_size)
-        loss_total = 0
         
-        for state, action, reward, next_state, done in minibatch:
-            state = torch.FloatTensor(state).unsqueeze(0)
-            next_state = torch.FloatTensor(next_state).unsqueeze(0)
-            target = reward
-            if not done:
-                target = (reward + self.gamma *
-                          torch.max(self.model(next_state)).item())
-            target_f = self.model(state)
-            target_f[0][action] = target
-            self.optimizer.zero_grad()
-            loss = self.criterion(self.model(state), target_f)
-            loss_total += loss.item()
-            loss.backward()
-            self.optimizer.step()
+        # 批量处理：将所有样本合并为批次张量
+        states = torch.FloatTensor([s for s, a, r, ns, d in minibatch])
+        actions = torch.LongTensor([a for s, a, r, ns, d in minibatch])
+        rewards = torch.FloatTensor([r for s, a, r, ns, d in minibatch])
+        next_states = torch.FloatTensor([ns for s, a, r, ns, d in minibatch])
+        dones = torch.BoolTensor([d for s, a, r, ns, d in minibatch])
+        
+        # 计算当前状态的Q值
+        current_q = self.model(states)
+        
+        # 计算目标Q值
+        next_q = self.model(next_states)
+        max_next_q = torch.max(next_q, dim=1)[0]
+        target_q = current_q.clone()
+        
+        # 更新目标Q值：使用masked_scatter更高效
+        target_q[range(batch_size), actions] = rewards + (self.gamma * max_next_q * ~dones)
+        
+        # 计算损失并进行反向传播
+        self.optimizer.zero_grad()
+        loss = self.criterion(current_q, target_q)
+        loss.backward()
+        self.optimizer.step()
+        
+        loss_total = loss.item() * batch_size  # 损失已经是平均值，乘以batch_size得到总和
         
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
@@ -371,7 +397,7 @@ def train_mode(show_visualization=True):
     """训练模式，支持实时可视化监控"""
     game = GameCore()
     agent = DQNAgent(22, 4)
-    batch_size = 64
+    batch_size = 128
     EPISODES = 2000
     
     # 用于跟踪训练过程的变量
@@ -398,7 +424,7 @@ def train_mode(show_visualization=True):
     
     # 初始化可视化
     if show_visualization:
-        fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 12))
+        fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(8, 8))
         fig.tight_layout(pad=3.0)
         
         # 设置标题
@@ -472,10 +498,9 @@ def train_mode(show_visualization=True):
             
             return score_line, avg_score_line, loss_line, avg_loss_line, epsilon_line, reward_line, avg_reward_line
         
-        # 创建动画
-        ani = FuncAnimation(fig, update_plot, interval=1000, blit=True)
         plt.ion()  # 开启交互模式
         plt.show(block=False)
+        plt.pause(0.1)  # 初始化显示
     
     step_counter = 0
     
@@ -503,7 +528,7 @@ def train_mode(show_visualization=True):
             
             # 训练模型
             if len(agent.memory) > batch_size:
-                loss = agent.replay(batch_size)
+                loss = agent.train(batch_size)
                 step_counter += 1
                 
                 # 记录损失
@@ -517,9 +542,9 @@ def train_mode(show_visualization=True):
                         training_stats['avg_loss'].append(avg_loss)
                     
                     # 每50步打印一次详细信息
-                    if step_counter % 50 == 0:
+                    if step_counter % 100 == 0:
                         avg_loss = np.mean(recent_losses) if recent_losses else 0
-                        print(f"[TRAINING] Episode: {e + 1:4d}, Step: {game.Length_of_snake:3d}, Loss: {loss:.4f}, Avg Loss: {avg_loss:.4f}, Epsilon: {agent.epsilon:.3f}")
+                        print(f"[TRAINING] Episode: {e + 1:4d}, Cur Score: {game.Length_of_snake-1:3d}, Loss: {loss:.4f}, Avg Loss: {avg_loss:.4f}, Epsilon: {agent.epsilon:.3f}")
             
             # 控制游戏速度
             game.tick()
@@ -544,9 +569,11 @@ def train_mode(show_visualization=True):
         print(f"\n[EPISODE {e + 1}/{EPISODES}] Score: {score:3d}, Avg Score: {avg_score:.2f}, Avg Loss: {avg_loss:.4f}, Epsilon: {agent.epsilon:.6f}, Total Reward: {episode_reward:.2f}")
         print("=" * 70)
         
-        # 更新可视化
+        # 更新可视化图表
         if show_visualization:
-            plt.pause(0.001)  # 短暂暂停以更新绘图
+            update_plot(None)  # 手动更新图表
+            plt.draw()  # 绘制最新数据
+            plt.pause(0.1)  # 暂停以更新绘图
         
         # 每100轮保存一次模型
         if (e + 1) % 100 == 0:
@@ -676,6 +703,10 @@ def main():
         print("无效的选择，请输入 1, 2 或 3")
 
 
+# 直接运行训练模式进行测试
 if __name__ == "__main__":
-    main()
+    # 为了测试，直接运行训练模式
+    print("=== Snake Game DQN AI ===")
+    print("直接启动训练模式进行测试...")
+    train_mode(show_visualization=True)
     
