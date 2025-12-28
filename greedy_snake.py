@@ -61,7 +61,9 @@ class GameCore:
         
         # 初始方向和距离
         self.current_direction = 0  # 初始方向设为向左
+        self.previous_direction = 0  # 记录前一个方向
         self.distance_old = np.sqrt((self.x1 - self.foodx)**2 + (self.y1 - self.foody)**2)
+        self.turns = []  # 记录所有拐弯点的位置
         
         self.game_over = False
         self.game_close = False
@@ -70,6 +72,9 @@ class GameCore:
     
     def step(self, action):
         """执行一步游戏，返回新状态、奖励、是否结束"""
+        # 记录前一个方向
+        self.previous_direction = self.current_direction
+        
         # 更新当前方向
         if action == 0 and self.x1_change != self.snake_block:
             self.x1_change = -self.snake_block
@@ -107,8 +112,27 @@ class GameCore:
         snake_Head.append(self.y1)
         self.snake_List.append(snake_Head)
         
+        # 检测是否发生拐弯
+        if self.current_direction != self.previous_direction:
+            # 记录当前位置为拐弯点
+            turn_pos = [self.x1, self.y1]
+            self.turns.append(turn_pos)
+        
+        old_tail_pos = None
+        
+        # 更新蛇身，移除旧的尾部（如果长度超过）
         if len(self.snake_List) > self.Length_of_snake:
-            del self.snake_List[0]
+            old_tail_pos = self.snake_List[0]  # 记录旧的尾部位置
+            del self.snake_List[0]  # 移除旧的尾部
+            
+            # 检查蛇尾是否离开任何拐弯点
+            if old_tail_pos is not None:
+                # 检查旧的尾部位置是否在拐弯点列表中
+                for i, turn_pos in enumerate(self.turns):
+                    if turn_pos == old_tail_pos:
+                        # 移除该拐弯点
+                        del self.turns[i]
+                        break
         
         for x in self.snake_List[:-1]:
             if x == snake_Head:
@@ -168,7 +192,7 @@ class GameCore:
     def get_state(self):
         """获取游戏状态"""
         if len(self.snake_List) == 0:
-            return np.zeros(22)
+            return np.zeros(42)  # 状态维度从23增加到42
             
         snake_head = self.snake_List[-1]
         
@@ -191,11 +215,95 @@ class GameCore:
         danger_down_left = 1 if head_x - self.snake_block < 0 or head_y + self.snake_block >= self.dis_height or [head_x - self.snake_block, head_y + self.snake_block] in self.snake_List else 0
         danger_down_right = 1 if head_x + self.snake_block >= self.dis_width or head_y + self.snake_block >= self.dis_height or [head_x + self.snake_block, head_y + self.snake_block] in self.snake_List else 0
         
+        # 扩展危险检测范围 - 检查蛇头前方2-3个方块
+        danger_ahead_2 = 0
+        danger_ahead_3 = 0
+        if self.current_direction == 0:  # 左
+            if head_x - 2 * self.snake_block >= 0 and [head_x - 2 * self.snake_block, head_y] in self.snake_List:
+                danger_ahead_2 = 1
+            if head_x - 3 * self.snake_block >= 0 and [head_x - 3 * self.snake_block, head_y] in self.snake_List:
+                danger_ahead_3 = 1
+        elif self.current_direction == 1:  # 右
+            if head_x + 2 * self.snake_block < self.dis_width and [head_x + 2 * self.snake_block, head_y] in self.snake_List:
+                danger_ahead_2 = 1
+            if head_x + 3 * self.snake_block < self.dis_width and [head_x + 3 * self.snake_block, head_y] in self.snake_List:
+                danger_ahead_3 = 1
+        elif self.current_direction == 2:  # 上
+            if head_y - 2 * self.snake_block >= 0 and [head_x, head_y - 2 * self.snake_block] in self.snake_List:
+                danger_ahead_2 = 1
+            if head_y - 3 * self.snake_block >= 0 and [head_x, head_y - 3 * self.snake_block] in self.snake_List:
+                danger_ahead_3 = 1
+        elif self.current_direction == 3:  # 下
+            if head_y + 2 * self.snake_block < self.dis_height and [head_x, head_y + 2 * self.snake_block] in self.snake_List:
+                danger_ahead_2 = 1
+            if head_y + 3 * self.snake_block < self.dis_height and [head_x, head_y + 3 * self.snake_block] in self.snake_List:
+                danger_ahead_3 = 1
+        
         # 食物相对位置和方向
         food_left = 1 if self.foodx < head_x else 0
         food_right = 1 if self.foodx > head_x else 0
         food_up = 1 if self.foody < head_y else 0
         food_down = 1 if self.foody > head_y else 0
+        
+        # 蛇身体当前弯折数量（使用turns列表长度，归一化）
+        normalized_bend_count = len(self.turns)**2 / len(self.snake_List) if len(self.snake_List) > 0 else 0
+        
+        # 计算蛇头到最近身体部位的距离和方向
+        min_distance = float('inf')
+        min_distance_dir = [0, 0, 0, 0]  # 左, 右, 上, 下
+        
+        # 遍历蛇身（跳过蛇头）
+        for body_part in self.snake_List[:-1]:
+            dx = body_part[0] - head_x
+            dy = body_part[1] - head_y
+            distance = abs(dx) + abs(dy)  # 曼哈顿距离
+            
+            if distance < min_distance:
+                min_distance = distance
+                # 确定最近身体部位的方向
+                min_distance_dir = [0, 0, 0, 0]
+                if abs(dx) > abs(dy):
+                    if dx < 0:
+                        min_distance_dir[0] = 1  # 左
+                    else:
+                        min_distance_dir[1] = 1  # 右
+                else:
+                    if dy < 0:
+                        min_distance_dir[2] = 1  # 上
+                    else:
+                        min_distance_dir[3] = 1  # 下
+        
+        normalized_min_distance = min_distance / (self.dis_width + self.dis_height)
+        
+        # 获取蛇身关键部位的相对位置
+        # 取最近的5个身体部位（如果有的话）
+        body_parts_features = []
+        max_body_parts = 5
+        for i in range(1, min(max_body_parts + 1, len(self.snake_List))):
+            body_part = self.snake_List[-1 - i]
+            # 计算相对位置并归一化
+            rel_x = (body_part[0] - head_x) / self.dis_width
+            rel_y = (body_part[1] - head_y) / self.dis_height
+            body_parts_features.extend([rel_x, rel_y])
+        
+        # 不足5个身体部位则用0填充
+        while len(body_parts_features) < 2 * max_body_parts:
+            body_parts_features.extend([0, 0])
+        
+        # 蛇身形状特征
+        snake_body = self.snake_List[:-1]  # 排除蛇头
+        
+        # 计算蛇身占据的宽度和高度
+        if len(snake_body) > 1:
+            body_x = [part[0] for part in snake_body]
+            body_y = [part[1] for part in snake_body]
+            body_width = max(body_x) - min(body_x) + self.snake_block
+            body_height = max(body_y) - min(body_y) + self.snake_block
+            normalized_body_width = body_width / self.dis_width
+            normalized_body_height = body_height / self.dis_height
+        else:
+            normalized_body_width = 0
+            normalized_body_height = 0
         
         state = [
             # 移动方向
@@ -203,6 +311,8 @@ class GameCore:
             # 周围危险情况
             danger_left, danger_right, danger_up, danger_down,
             danger_up_left, danger_up_right, danger_down_left, danger_down_right,
+            # 扩展危险检测
+            danger_ahead_2, danger_ahead_3,
             # 食物相对位置
             food_left, food_right, food_up, food_down,
             # 蛇头到食物的相对距离
@@ -212,9 +322,28 @@ class GameCore:
             head_x / self.dis_width,
             (self.dis_width - head_x) / self.dis_width,
             head_y / self.dis_height,
-            (self.dis_height - head_y) / self.dis_height
+            (self.dis_height - head_y) / self.dis_height,
+            # 蛇身体当前弯折数量（归一化）
+            normalized_bend_count,
+            # 最近身体部位信息
+            *min_distance_dir,
+            normalized_min_distance,
+            # 蛇身关键部位相对位置
+            *body_parts_features,
+            # 蛇身形状特征
+            normalized_body_width,
+            normalized_body_height
         ]
-        return np.array(state)
+        # 验证状态向量长度
+        assert len(state) == 42, f"State vector length is {len(state)}, expected 42"
+        
+        # 检查状态向量中是否有NaN或无穷大值
+        state_array = np.array(state)
+        if np.isnan(state_array).any() or np.isinf(state_array).any():
+            # 替换NaN和无穷大值为0
+            state_array = np.nan_to_num(state_array, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        return state_array
     
     def handle_events(self):
         """处理事件，用于手动模式"""
@@ -288,7 +417,7 @@ class DQNAgent:
         self.epsilon = 1.0  # 探索率
         self.epsilon_min = 0.001  # 降低最小探索率
         self.epsilon_decay = 0.995  # 加快探索率衰减
-        self.learning_rate = 0.0001  # 提高学习率
+        self.learning_rate = 0.00001  # 降低学习率以提高稳定性
         self.model = DQN(state_size, 256, action_size)  # 隐藏层大小不再使用，保持参数兼容
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
         self.criterion = nn.SmoothL1Loss()  # 使用Huber损失(SmoothL1Loss)，提高对异常值的鲁棒性
@@ -397,7 +526,7 @@ class DQNAgent:
 def train_mode(show_visualization=True):
     """训练模式，支持实时可视化监控"""
     game = GameCore()
-    agent = DQNAgent(22, 4)
+    agent = DQNAgent(42, 4)
     batch_size = 128
     EPISODES = 2000
     
@@ -570,11 +699,11 @@ def train_mode(show_visualization=True):
         print(f"\n[EPISODE {e + 1}/{EPISODES}] Score: {score:3d}, Avg Score: {avg_score:.2f}, Avg Loss: {avg_loss:.4f}, Epsilon: {agent.epsilon:.6f}, Total Reward: {episode_reward:.2f}")
         print("=" * 70)
         
-        # 更新可视化图表
-        if show_visualization:
-            update_plot(None)  # 手动更新图表
-            plt.draw()  # 绘制最新数据
-            plt.pause(0.1)  # 暂停以更新绘图
+        # # 更新可视化图表
+        # if show_visualization:
+        #     update_plot(None)  # 手动更新图表
+        #     plt.draw()  # 绘制最新数据
+        #     plt.pause(0.1)  # 暂停以更新绘图
         
         # 每100轮保存一次模型
         if (e + 1) % 100 == 0:
@@ -594,7 +723,7 @@ def train_mode(show_visualization=True):
 def play_mode(model_file):
     """加载训练好的模型并自动玩游戏"""
     game = GameCore()
-    agent = DQNAgent(22, 4)
+    agent = DQNAgent(42, 4)
     
     # 加载模型
     try:
